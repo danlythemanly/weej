@@ -17,7 +17,11 @@
 	exit(-1);				\
 	} while(0)
 
-int start_server() {
+
+static char *html;
+static long htmlsize;
+
+static int start_server(void) {
 	int lfd;
 	struct sockaddr_in saddr;
 
@@ -50,7 +54,28 @@ int start_server() {
 				 (struct sockaddr *)&caddr, &clen);
 
 		if ( strncmp("GET / ", buf, strlen("GET / ")) == 0 ) {
+			int sent;
 			printf("received GET\n");
+
+			#define STATUS_OK "HTTP/1.1 200 OK\n"
+			#define CONT_TYPE "Content-Type: text/html;\n\n"
+
+			sent = sendto(fd, STATUS_OK, 
+				      strlen(STATUS_OK), 0, 
+				      (struct sockaddr *)&caddr, clen);
+			if ( sent < 0 )
+				ERROR("couldn't send status\n");
+			
+			sent = sendto(fd, CONT_TYPE, 
+				      strlen(CONT_TYPE), 0, 
+				      (struct sockaddr *)&caddr, clen);
+			if ( sent < 0 )
+				ERROR("couldn't send content type\n");
+
+			sent = sendto(fd, html, htmlsize, 0, 
+				      (struct sockaddr *)&caddr, clen);
+			if ( sent < 0 )
+				ERROR("couldn't send html\n");
 			
 		}
 		
@@ -72,25 +97,10 @@ int start_server() {
 
 		close(fd);
 	}
-#if 0
-
-            sendto(connfd,mesg,n,0,(struct sockaddr *)&cliaddr,sizeof(cliaddr));
-            printf("-------------------------------------------------------\n");
-            mesg[n] = 0;
-            printf("Received the following:\n");
-            printf("%s",mesg);
-            printf("-------------------------------------------------------\n");
-         }
-         
-      }
-      close(connfd);
-#endif
 }
 
 int main(int argc, char **argv) {
 	FILE *fp;
-	long filesize;
-	char *html;
 	struct stat stats;
 
 	if ( argc < 2 )
@@ -99,22 +109,22 @@ int main(int argc, char **argv) {
 	if ( stat(argv[1], &stats) < 0 )
 		ERROR("couldn't stat %s\n", argv[1]);
 
-	filesize = stats.st_size;
+	htmlsize = stats.st_size;
 
 	fp = fopen(argv[1], "r");
 	if ( !fp )
 		ERROR("couldn't open file %s\n", argv[1]);
 	
-	printf("got %ld\n", filesize);
+	printf("got %ld\n", htmlsize);
 	
-	html = (char *)malloc(filesize);
+	html = (char *)malloc(htmlsize);
 	if (!html)
 		ERROR("couldn't malloc\n");
 
-	if ( fread(html, stats.st_blksize, 1, fp) != 1 )
+	if ( fread(html, htmlsize, 1, fp) != 1 )
 		ERROR("couldn't fread\n");
 
-	printf("got %ld bytes of %s\n", filesize, argv[1]);
+	printf("got %ld bytes of %s\n", htmlsize, argv[1]);
 
 	start_server();
 }
