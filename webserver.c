@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <string.h>
 
-#define MAX_OBJECTS 10
+#define MAX_OBJECTS 100
 
 #define PORT        8080
 #define BACKLOG     1024
@@ -68,8 +68,10 @@ static int add_object(char *filename) {
 		obj->content_type = "Content-Type: text/html\n";
 	else if ( !strncmp(filename + strlen(filename) - 3, "jpg", 3) )
 		obj->content_type = "Content-Type: image/jpeg\n";
+	else if ( !strncmp(filename + strlen(filename) - 3, "pdf", 3) )
+		obj->content_type = "Content-Type: application/pdf\n";
 	else
-		ERROR("unrecognized type");
+		ERROR("unrecognized type: %s\n", filename);
 
 	obj->content_len = stats.st_size;
 
@@ -245,7 +247,7 @@ int main(int argc, char **argv) {
 	int i;
 
 	if ( argc < 2 )
-		FATAL("Usage %s index.html <other html or jpg files>\n", 
+		FATAL("Usage %s index.html <html/jpg/pdf files>\n", 
 		      argv[0]);
 
 	for ( i = 1 ; i < argc; i++ )
