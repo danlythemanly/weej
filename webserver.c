@@ -9,83 +9,112 @@
 #include <unistd.h>
 #include <string.h>
 
-#define MAX_OBJECTS 100
 
 #define PORT        8080
-#define BACKLOG     1024
-#define MAX_REQ_LEN 1024
-#define FATAL(x...) do {			\
-		printf(x);			\
-		exit(-1);			\
+
+#define BACKLOG     1024   /* parameter for socket listen   */
+#define MAX_REQ_LEN 1024   /* parameter for socket recvfrom */
+
+#define USAGE() do {						     \
+		printf("Usage: %s "				     \
+		       "index.html 404.html <html/jpg/pdf files>\n", \
+		       argv[0]);				     \
+		return -1;					     \
+	} while(0);
+
+#define ERROR(r, x...) do {				\
+		printf("%s:%d: ", __FILE__, __LINE__);	\
+		printf(x);				\
+		return (r);				\
 	} while(0)
-#define ERROR(x...) do {			\
-		printf(x);			\
-		return -1;			\
-	} while(0)
-#define NULLERROR(x...) do {			\
-		printf(x);			\
-		return NULL;			\
-	} while(0)
 
 
-
-
+/* This webserver serves objects represented with the following
+   structure.  For simplicity, we just keep a static array of objects.
+   There are a couple of special objects in the array, so far just the
+   index object (e.g., index.html) and the 404 object.
+ */
 struct object {
 	char *filename;
 	char *content_type;
 	unsigned char *content;
 	int content_len;
+	char *content_len_str;
 };
+#define OBJECT_INDEX 0  /* index.html */
+#define OBJECT_404   1  /* 404 page */
 
+#define MAX_OBJECTS 100
 static struct object objects[MAX_OBJECTS];
 static int num_objects;
 
-static char *html;
-static long htmlsize;
+/* We only ever have success or 404 */
+#define HTTP_STATUS_OK    "HTTP/1.1 200 OK\n"
+#define HTTP_STATUS_404   "HTTP/1.1 404 Not Found\n"
 
-static void print_object(struct object *obj) {
-	printf("OBJECT: %s\n", obj->filename);
-	printf("        %s", obj->content_type);
-	printf("        %d\n", obj->content_len);
-}
+/* We only serve .html, .jpg, and .pdf files */
+#define HTTP_CONTENT_HTML "Content-Type: text/html\n"
+#define HTTP_CONTENT_JPG  "Content-Type: image/jpeg\n"
+#define HTTP_CONTENT_PDF  "Content-Type: application/pdf\n"
 
+#define HTTP_LENGTH_FMT   "Content-Length: %d\n\n"
+
+
+/* Adding objects to the array only happens at init time. */
 static int add_object(char *filename) {
 	FILE *fp;
 	struct stat stats;
 	struct object *obj;
+	int sz, ret;
 
 	if ( strlen(filename) < 5 )
-		ERROR("filename is too short\n");
+		ERROR(-1, "filename is too short\n");
 
 	if ( stat(filename, &stats) < 0 )
-		ERROR("couldn't stat %s\n", filename);
+		ERROR(-1, "couldn't stat %s\n", filename);
 
 	obj = &objects[num_objects];
 
 	obj->filename = filename;
 
 	if ( !strncmp(filename + strlen(filename) - 4, "html", 4) )
-		obj->content_type = "Content-Type: text/html\n";
+		obj->content_type = HTTP_CONTENT_HTML;
 	else if ( !strncmp(filename + strlen(filename) - 3, "jpg", 3) )
-		obj->content_type = "Content-Type: image/jpeg\n";
+		obj->content_type = HTTP_CONTENT_JPG;
 	else if ( !strncmp(filename + strlen(filename) - 3, "pdf", 3) )
-		obj->content_type = "Content-Type: application/pdf\n";
+		obj->content_type = HTTP_CONTENT_PDF;
 	else
-		ERROR("unrecognized type: %s\n", filename);
+		ERROR(-1, "unrecognized type: %s\n", filename);
 
 	obj->content_len = stats.st_size;
 
 	fp = fopen(filename, "r");
 	if ( !fp )
-		ERROR("couldn't open file %s\n", filename);
+		ERROR(-1, "couldn't open file %s\n", filename);
 	
-	obj->content = (char *)malloc(obj->content_len);
-	if (!obj->content)
-		ERROR("couldn't malloc %d\n", obj->content_len);
+	obj->content = (unsigned char *)malloc(obj->content_len);
+	if ( !obj->content )
+		ERROR(-1, "couldn't malloc %d\n", obj->content_len);
 
 	if ( fread(obj->content, obj->content_len, 1, fp) != 1 ) {
 		free(obj->content);
-		ERROR("couldn't fread\n");
+		ERROR(-1, "couldn't fread\n");
+	}
+
+	sz = snprintf(NULL, 0, HTTP_LENGTH_FMT, obj->content_len);
+	obj->content_len_str = (char *)malloc(sz + 1);
+	if ( !obj->content_len_str ) {
+		free(obj->content);
+		ERROR(-1, "couldn't malloc %d\n", obj->content_len);
+	}
+	
+	ret = snprintf(obj->content_len_str, sz + 1,
+		       HTTP_LENGTH_FMT, obj->content_len);
+	if ( ret != sz ) {
+		free(obj->content);
+		free(obj->content_len_str);
+		ERROR(-1, "couldn't sprintf %d into %d bytes\n", 
+		      obj->content_len, sz);
 	}
 
 	num_objects++;
@@ -93,15 +122,17 @@ static int add_object(char *filename) {
 	return 0;
 }
 
+
+/* We only support GETs of our objects. */
 struct object *get_object(char *req, int reqlen){
 	char *reqfile;
 	int i = 0;
 
 	if ( strncmp(req, "GET ", 4) )
-		NULLERROR("not a GET\n");
+		ERROR(NULL, "not a GET\n");
 	
 	if ( !strncmp(req, "GET / ", 6) )
-		return &objects[0];
+		return &objects[OBJECT_INDEX];
 
 	reqfile = req + 5;
 
@@ -118,14 +149,65 @@ struct object *get_object(char *req, int reqlen){
 	return NULL;
 }
 
+/* Serve the object (with success or 404) */
+static int serve_obj(int fd, struct sockaddr *caddr, socklen_t clen,
+		     char *status, struct object *obj) {
+	int ret;
+
+	ret = sendto(fd, status, strlen(status), 0, caddr, clen);
+	if ( ret < 0 )
+		ERROR(-1, "couldn't send status\n");
+			
+	ret = sendto(fd, obj->content_type, strlen(obj->content_type), 
+		     0, caddr, clen);
+	if ( ret < 0 )
+		ERROR(-1, "couldn't send content type\n");
+
+	ret = sendto(fd, obj->content_len_str, 
+		     strlen(obj->content_len_str), 0, caddr, clen);
+	if ( ret < 0 )
+		ERROR(-1, "couldn't send content length\n");
+
+	ret = sendto(fd, obj->content, obj->content_len, 0, caddr, clen);
+	if ( ret < 0 )
+		ERROR(-1, "couldn't send content\n");
+
+	return 0;
+}
+
+static int handle_connection(int fd, 
+			     struct sockaddr *caddr, 
+			     socklen_t clen) {
+	char buf[MAX_REQ_LEN + 1];
+	int recvd;
+	struct object *obj;
+
+	memset(buf, 0, MAX_REQ_LEN + 1);
+	recvd = recvfrom(fd, buf, MAX_REQ_LEN, 0, caddr, &clen);
+
+	obj = get_object(buf, recvd);
+
+	if (obj != NULL) {
+		printf("serving %s\n", obj->filename);
+		return serve_obj(fd, caddr, clen, HTTP_STATUS_OK, obj);
+	} 
+	
+	return serve_obj(fd, caddr, clen, 
+			 HTTP_STATUS_404, &objects[OBJECT_404]);
+}
 
 static int start_server(void) {
 	int lfd;
 	struct sockaddr_in saddr;
+	int so_reuseaddr = 1;
 
 	lfd = socket(AF_INET,SOCK_STREAM,0);
 	if ( lfd < 0 )
-		FATAL("socket error\n");
+		ERROR(-1, "socket error\n");
+
+        if ( setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR,
+			&so_reuseaddr, sizeof(so_reuseaddr)) )
+		ERROR(-1, "couldn't set sock opt\n");
 
 	memset(&saddr, 0, sizeof(saddr));
 
@@ -133,125 +215,34 @@ static int start_server(void) {
 	saddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	saddr.sin_port = htons(PORT);
 	if ( bind(lfd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0 )
-		FATAL("bind error\n");
+		ERROR(-1, "bind error\n");
 
 	if ( listen(lfd, BACKLOG) < 0 )
-		FATAL("listen error\n");
+		ERROR(-1, "listen error\n");
 
 	for(;;) {
 		int fd;
 		struct sockaddr_in caddr;
-		int clen = sizeof(caddr);
-		char buf[MAX_REQ_LEN + 1];
-		int recvd;
-		int i;
-		struct object *obj;
+		socklen_t clen = sizeof(caddr);
 
 		fd = accept(lfd, (struct sockaddr *)&caddr, &clen);
-
-		memset(buf, 0, MAX_REQ_LEN + 1);
-		recvd = recvfrom(fd, buf, MAX_REQ_LEN, 0,
-				 (struct sockaddr *)&caddr, &clen);
-
-		obj = get_object(buf, recvd);
-
-		if (obj != NULL) {
-			int ret;
-#define STATUS_OK "HTTP/1.1 200 OK\n"
-#define LENGTH_FMT "Content-Length: %d\n\n"
-#define MAX_LENGTH_STR 256
-
-			char content_length[MAX_LENGTH_STR];
-
-			printf("serving %s\n", obj->filename);
-
-			ret = sendto(fd, STATUS_OK, 
-				      strlen(STATUS_OK), 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( ret < 0 )
-				FATAL("couldn't send status\n");
-			
-			ret = sendto(fd, obj->content_type, 
-				      strlen(obj->content_type), 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( ret < 0 )
-				FATAL("couldn't send content type\n");
-
-			memset(content_length, 0, MAX_LENGTH_STR);
-			ret = snprintf(content_length, MAX_LENGTH_STR, 
-				LENGTH_FMT, obj->content_len);
-			if ( ret > MAX_LENGTH_STR )
-				FATAL("couldn't sprintf length str\n");
-
-			ret = sendto(fd, content_length, 
-				      strlen(content_length), 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( ret < 0 )
-				FATAL("couldn't send content length\n");
-
-			ret = sendto(fd, obj->content, 
-				      obj->content_len, 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( ret < 0 )
-				FATAL("couldn't send html\n");
-			
+		if ( fd > 0 ) {
+			handle_connection(fd, 
+					  (struct sockaddr *)&caddr, 
+					  clen);
+			close(fd);
 		}
-#if 0
-		if ( strncmp("GET / ", buf, strlen("GET / ")) == 0 ) {
-			int sent;
-			printf("received GET\n");
-
-			#define STATUS_OK "HTTP/1.1 200 OK\n"
-			#define CONT_TYPE "Content-Type: text/html;\n\n"
-
-			sent = sendto(fd, STATUS_OK, 
-				      strlen(STATUS_OK), 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( sent < 0 )
-				FATAL("couldn't send status\n");
-			
-			sent = sendto(fd, CONT_TYPE, 
-				      strlen(CONT_TYPE), 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( sent < 0 )
-				FATAL("couldn't send content type\n");
-
-			sent = sendto(fd, html, htmlsize, 0, 
-				      (struct sockaddr *)&caddr, clen);
-			if ( sent < 0 )
-				FATAL("couldn't send html\n");
-			
-		}
-		
-		for (i = 0; i < recvd; i++ ) {
-			printf("%02x ", buf[i]);
-			if (i % 8 == 7 )
-				printf(" ");
-			if (i % 16 == 15 )
-				printf("\n");
-		}
-		printf("got %d bytes\n", recvd);
-
-		for (i = 0; i < recvd; i++ ) {
-			printf("%c", buf[i]);
-			if (i % 16 == 15 )
-				printf("\n");
-		}
-		printf("got %d bytes\n", recvd);
-#endif
-		close(fd);
 	}
 }
 
 int main(int argc, char **argv) {
 	int i;
 
-	if ( argc < 2 )
-		FATAL("Usage %s index.html <html/jpg/pdf files>\n", 
-		      argv[0]);
+	if ( argc < 3 )
+		USAGE();
 
 	for ( i = 1 ; i < argc; i++ )
 		add_object(argv[i]);
 
-	start_server();
+	return start_server();
 }
