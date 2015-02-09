@@ -1,6 +1,6 @@
 
-all: webserver
+all: weej
 
-webserver: webserver.c
-	gcc -Wall -o webserver webserver.c
+weej: weej.c
+	gcc -Wall -o weej weej.c
 
