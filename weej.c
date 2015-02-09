@@ -1,3 +1,12 @@
+/* weej.c 
+ * 
+ * Weej is a simple static Web server.  It loads all objects into
+ * memory at initialization time and can serve HTTP for HTML, JPG and
+ * PDF files from a single thread.
+ *
+ * Written by: Dan Williams <danlythemanly@gmail.com> 1/21/2015
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 
