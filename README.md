@@ -26,6 +26,18 @@ with the object data.  Otherwise, weej constructs a 404 Not Found
 response with the content of the 404 object loaded at initialization
 time.
 
-That's all there is to it!
+There is also an upstart configuration file so that you can run weej
+as a long-running service.  By default, it serves two files out of the
+www subdirectory, but these can be changed by editing weej.conf.  To
+install the upstart file just type:
+
+    sudo make install 
+
+Then, to start weej, type:
+
+    sudo service weej start
+
+You'll see a very simple html page (www/sample_index.html) on port
+8080.  That's all there is to it!
 
 Written by: Dan Williams <danlythemanly@gmail.com> 1/21/2015
