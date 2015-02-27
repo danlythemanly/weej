@@ -24,19 +24,23 @@
 #define BACKLOG     1024   /* parameter for socket listen   */
 #define MAX_REQ_LEN 1024   /* parameter for socket recvfrom */
 
-#define USAGE() do {						     \
-		printf("Usage: %s "				     \
-		       "index.html 404.html <html/jpg/pdf files>\n", \
-		       argv[0]);				     \
-		return -1;					     \
+#define USAGE() do {							\
+		fprintf(log, "Usage: %s "				\
+			"index.html 404.html <html/css/jpg/pdf files>\n", \
+			argv[0]);					\
+		fflush(log);						\
+		return -1;						\
 	} while(0);
 
-#define ERROR(r, x...) do {				\
-		printf("%s:%d: ", __FILE__, __LINE__);	\
-		printf(x);				\
-		return (r);				\
+#define ERROR(r, x...) do {					\
+		fprintf(log, "%s:%d: ", __FILE__, __LINE__);	\
+		fprintf(log, x);				\
+		fflush(log);					\
+		return (r);					\
 	} while(0)
 
+#define WEEJLOG "/tmp/weejlog"
+static FILE *log;
 
 /* This webserver serves objects represented with the following
    structure.  For simplicity, we just keep a static array of objects.
@@ -61,8 +65,9 @@ static int num_objects;
 #define HTTP_STATUS_OK    "HTTP/1.1 200 OK\n"
 #define HTTP_STATUS_404   "HTTP/1.1 404 Not Found\n"
 
-/* We only serve .html, .jpg, and .pdf files */
+/* We only serve .html, .css, .jpg, and .pdf files */
 #define HTTP_CONTENT_HTML "Content-Type: text/html\n"
+#define HTTP_CONTENT_CSS "Content-Type: text/css\n"
 #define HTTP_CONTENT_JPG  "Content-Type: image/jpeg\n"
 #define HTTP_CONTENT_PDF  "Content-Type: application/pdf\n"
 
@@ -88,6 +93,8 @@ static int add_object(char *filename) {
 
 	if ( !strncmp(filename + strlen(filename) - 4, "html", 4) )
 		obj->content_type = HTTP_CONTENT_HTML;
+	else if ( !strncmp(filename + strlen(filename) - 3, "css", 3) )
+		obj->content_type = HTTP_CONTENT_CSS;
 	else if ( !strncmp(filename + strlen(filename) - 3, "jpg", 3) )
 		obj->content_type = HTTP_CONTENT_JPG;
 	else if ( !strncmp(filename + strlen(filename) - 3, "pdf", 3) )
@@ -197,7 +204,8 @@ static int handle_connection(int fd,
 	obj = get_object(buf, recvd);
 
 	if (obj != NULL) {
-		printf("serving %s\n", obj->filename);
+		fprintf(log, "serving %s\n", obj->filename);
+		fflush(log);						
 		return serve_obj(fd, caddr, clen, HTTP_STATUS_OK, obj);
 	} 
 	
@@ -249,6 +257,8 @@ int main(int argc, char **argv) {
 
 	if ( argc < 3 )
 		USAGE();
+
+	log = fopen(WEEJLOG, "w");
 
 	for ( i = 1 ; i < argc; i++ )
 		add_object(argv[i]);
